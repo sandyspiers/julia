@@ -401,8 +401,14 @@ jl_ptls_t jl_init_threadtls(int16_t tid)
     return ptls;
 }
 
-JL_DLLEXPORT jl_gcframe_t **jl_adopt_thread(void)
+// Pass in the handle to the system image. This is used to initialize the runtime correctly in case we are a shared library
+JL_DLLEXPORT jl_gcframe_t **jl_adopt_thread(void* sysimg_handle)
 {
+    if (!jl_is_initialized()) {
+        if (jl_init_runtime_adopt_thread(sysimg_handle) == 1)
+            return &jl_get_current_task()->gcstack;
+        // We lost the race and need to be initialized as usual
+    }
     // `jl_init_threadtls` puts us in a GC unsafe region, so ensure GC isn't running.
     // we can't use a normal safepoint because we don't have signal handlers yet.
     // we also can't use jl_safepoint_wait_gc because that assumes we're in a task.
