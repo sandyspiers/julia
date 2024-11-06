@@ -219,6 +219,7 @@ void jl_set_gc_and_wait(void) // n.b. not used on _OS_DARWIN_
     // reading own gc state doesn't need atomic ops since no one else
     // should store to it.
     int8_t state = jl_atomic_load_relaxed(&ct->ptls->gc_state);
+    ct->ctx.activefp = (char*)jl_get_frame_addr();
     jl_atomic_store_release(&ct->ptls->gc_state, JL_GC_STATE_WAITING);
     uv_mutex_lock(&safepoint_lock);
     uv_cond_broadcast(&safepoint_cond_begin);
@@ -258,6 +259,7 @@ void jl_safepoint_wait_thread_resume(void)
     // might have already observed our gc_state.
     // if (!jl_atomic_load_relaxed(&ct->ptls->suspend_count)) return;
     int8_t state = jl_atomic_load_relaxed(&ct->ptls->gc_state);
+    ct->ctx.activefp = (char*)jl_get_frame_addr();
     jl_atomic_store_release(&ct->ptls->gc_state, JL_GC_STATE_WAITING);
     uv_mutex_lock(&ct->ptls->sleep_lock);
     if (jl_atomic_load_relaxed(&ct->ptls->suspend_count)) {
