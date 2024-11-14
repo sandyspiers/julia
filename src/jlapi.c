@@ -90,12 +90,13 @@ JL_DLLEXPORT void jl_set_ARGS(int argc, char **argv)
  * @param image_path The path of a system image file (*.so). Interpreted as relative to julia_bindir
  *                   or the default Julia home directory if not an absolute path.
  */
-JL_DLLEXPORT void jl_init_with_image(const char *julia_bindir,
-                                     const char *image_path)
+JL_DLLEXPORT void jl_init_with_image(const char *julia_bindir, const char *image_path)
 {
     if (jl_is_initialized())
         return;
+#ifndef __clang_analyzer__
     uv_mutex_lock(&initialization_lock);
+#endif
     jl_options.julia_bindir = julia_bindir;
     if (image_path != NULL)
         jl_options.image_file = image_path;
@@ -103,6 +104,10 @@ JL_DLLEXPORT void jl_init_with_image(const char *julia_bindir,
         jl_options.image_file = jl_get_default_sysimg_path();
     julia_init(JL_IMAGE_JULIA_HOME);
     jl_exception_clear();
+    jl_atomic_store_release(&jl_runtime_is_initialized, 1);
+#ifndef __clang_analyzer__
+    uv_mutex_unlock(&initialization_lock);
+#endif
 }
 
 /**
@@ -1037,7 +1042,9 @@ JL_DLLEXPORT int jl_repl_entrypoint(int argc, char *argv[])
     // No-op on non-windows
     lock_low32();
 
-    jl_preinit_runtime();
+#ifndef __clang_analyzer__
+    uv_mutex_lock(&initialization_lock);
+#endif
     int lisp_prompt = (argc >= 2 && strcmp((char*)argv[1],"--lisp") == 0);
     if (lisp_prompt) {
         memmove(&argv[1], &argv[2], (argc-2)*sizeof(void*));
@@ -1059,6 +1066,10 @@ JL_DLLEXPORT int jl_repl_entrypoint(int argc, char *argv[])
     }
 
     julia_init(jl_options.image_file_specified ? JL_IMAGE_CWD : JL_IMAGE_JULIA_HOME);
+    jl_atomic_store_release(&jl_runtime_is_initialized, 1);
+#ifndef __clang_analyzer__
+    uv_mutex_unlock(&initialization_lock);
+#endif
     if (lisp_prompt) {
         jl_current_task->world_age = jl_get_world_counter();
         jl_lisp_prompt();
@@ -1069,9 +1080,12 @@ JL_DLLEXPORT int jl_repl_entrypoint(int argc, char *argv[])
     return ret;
 }
 
-int jl_init_runtime_adopt_thread(void* sysimg_handle) {
+int jl_init_runtime_adopt_thread(void* sysimg_handle)
+{
     // Check if we are the main thread
+#ifndef __clang_analyzer__
     uv_mutex_lock(&initialization_lock);
+#endif
     if (jl_is_initialized()) {
         uv_mutex_unlock(&initialization_lock); // Someone won the race
         return 0;
@@ -1082,7 +1096,10 @@ int jl_init_runtime_adopt_thread(void* sysimg_handle) {
     jl_base_image_handle = sysimg_handle;
     julia_init(JL_IMAGE_IN_MEMORY);
     jl_enter_threaded_region();
+    jl_atomic_store_release(&jl_runtime_is_initialized, 1);
+#ifndef __clang_analyzer__
     uv_mutex_unlock(&initialization_lock);
+#endif
     return 1;
 }
 

@@ -198,16 +198,20 @@ void LowerPTLS::fix_pgcstack_use(CallInst *pgcstack, Function *pgcstack_getter, 
             adoptFunc->copyAttributesFrom(pgcstack_getter);
             adoptFunc->copyMetadata(pgcstack_getter, 0);
         }
-        // Adopt thread takes in a handle to the sysimage and this is the easiest way to get it.
-        Function *dladdr = M->getFunction(XSTR(jl_find_dynamic_library_by_addr)); // gets handle to sysimage
-        if (dladdr == NULL) {
-            dladdr = Function::Create(FunctionType::get(builder.getPtrTy(), { builder.getPtrTy()}, false),
-                pgcstack_getter->getLinkage(), pgcstack_getter->getAddressSpace(),
-                XSTR(jl_find_dynamic_library_by_addr), M);
-        }
         builder.SetInsertPoint(slowTerm);
-        auto this_func = builder.GetInsertBlock()->getParent();
-        auto handle = builder.CreateCall(dladdr, {ConstantExpr::getBitCast(this_func, builder.getPtrTy())});
+        Value* handle = Constant::getNullValue(builder.getPtrTy());
+        if (imaging_mode) {
+            // Adopt thread takes in a handle to the sysimage and this is the easiest way to get it.
+            Function *dladdr = M->getFunction(XSTR(jl_find_dynamic_library_by_addr)); // gets handle to sysimage
+            if (dladdr == NULL) {
+                dladdr = Function::Create(FunctionType::get(builder.getPtrTy(), { builder.getPtrTy()}, false),
+                    pgcstack_getter->getLinkage(), pgcstack_getter->getAddressSpace(),
+                    XSTR(jl_find_dynamic_library_by_addr), M);
+            }
+            auto this_func = builder.GetInsertBlock()->getParent();
+            handle = builder.CreateCall(dladdr, {ConstantExpr::getBitCast(this_func, builder.getPtrTy())});
+        }
+
         auto adopt = builder.CreateCall(adoptFunc, {handle});
         phi->addIncoming(adopt, slowTerm->getParent());
         // emit fast branch code
