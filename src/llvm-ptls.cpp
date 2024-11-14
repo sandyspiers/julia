@@ -278,6 +278,7 @@ void LowerPTLS::fix_pgcstack_use(CallInst *pgcstack, Function *pgcstack_getter, 
                 phi2->addIncoming(pgcstack, nonNullTerm->getParent());
                 phi2->addIncoming(Constant::getNullValue(T_pppjlvalue), nullTerm->getParent());
                 phi_value = phi2;
+                builder.SetInsertPoint(pgcstack);
                 // Check if pgcstack_func_slot is initialized
             }
             getter->setMetadata(llvm::LLVMContext::MD_tbaa, tbaa_const);
@@ -307,9 +308,10 @@ void LowerPTLS::fix_pgcstack_use(CallInst *pgcstack, Function *pgcstack_getter, 
             builder.SetInsertPoint(pgcstack);
             auto phi2 = builder.CreatePHI(T_pppjlvalue, 2, "pgcstack");
             pgcstack->moveBefore(nonNullTerm);
+            pgcstack->replaceAllUsesWith(phi2);
             phi2->addIncoming(pgcstack, nonNullTerm->getParent());
             phi2->addIncoming(Constant::getNullValue(T_pppjlvalue), nullTerm->getParent());
-            pgcstack->replaceAllUsesWith(phi2);
+            builder.SetInsertPoint(pgcstack);
         }
         getter->setMetadata(llvm::LLVMContext::MD_tbaa, tbaa_const);
         getter->setMetadata(llvm::LLVMContext::MD_invariant_load, MDNode::get(pgcstack->getContext(), None));
