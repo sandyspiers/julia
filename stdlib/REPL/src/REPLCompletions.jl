@@ -5,7 +5,10 @@ module REPLCompletions
 export completions, shell_completions, bslash_completions, completion_text
 
 using Core: Const
-const CC = Core.Compiler
+# We want to insulate the REPLCompletion module from any changes the user may
+# make to the compiler, since it runs by default and the system becomes unusable
+# if it breaks.
+const CC = Base.Compiler
 using Base.Meta
 using Base: propertynames, something, IdSet
 using Base.Filesystem: _readdirx
@@ -141,6 +144,19 @@ function append_filtered_mod_names!(ffunc::Function, suggestions::Vector{Complet
     ssyms = names(mod; all=true, imported, usings)
     filter!(ffunc, ssyms)
     macros = filter(x -> startswith(String(x), "@" * name), ssyms)
+
+    # don't complete string and command macros when the input matches the internal name like `r_` to `r"`
+    if !startswith(name, "@")
+        filter!(macros) do m
+            s = String(m)
+            if endswith(s, "_str") || endswith(s, "_cmd")
+                occursin(name, first(s, length(s)-4))
+            else
+                true
+            end
+        end
+    end
+
     syms = String[sprint((io,s)->Base.show_sym(io, s; allow_macroname=true), s) for s in ssyms if completes_global(String(s), name)]
     appendmacro!(syms, macros, "_str", "\"")
     appendmacro!(syms, macros, "_cmd", "`")
@@ -575,7 +591,7 @@ CC.cache_owner(::REPLInterpreter) = REPLCacheToken()
 CC.may_optimize(::REPLInterpreter) = false
 
 # REPLInterpreter doesn't need any sources to be cached, so discard them aggressively
-CC.transform_result_for_cache(::REPLInterpreter, ::Core.MethodInstance, ::CC.WorldRange, ::CC.InferenceResult) = nothing
+CC.transform_result_for_cache(::REPLInterpreter, ::CC.InferenceResult) = nothing
 
 # REPLInterpreter analyzes a top-level frame, so better to not bail out from it
 CC.bail_out_toplevel_call(::REPLInterpreter, ::CC.InferenceLoopState, ::CC.InferenceState) = false
@@ -611,11 +627,13 @@ function is_call_graph_uncached(sv::CC.InferenceState)
     return is_call_graph_uncached(parent::CC.InferenceState)
 end
 
+isdefined_globalref(g::GlobalRef) = !iszero(ccall(:jl_globalref_boundp, Cint, (Any,), g))
+
 # aggressive global binding resolution within `repl_frame`
 function CC.abstract_eval_globalref(interp::REPLInterpreter, g::GlobalRef,
                                     sv::CC.InferenceState)
     if (interp.limit_aggressive_inference ? is_repl_frame(sv) : is_call_graph_uncached(sv))
-        if CC.isdefined_globalref(g)
+        if isdefined_globalref(g)
             return CC.RTEffects(Const(ccall(:jl_get_globalref_value, Any, (Any,), g)), Union{}, CC.EFFECTS_TOTAL)
         end
         return CC.RTEffects(Union{}, UndefVarError, CC.EFFECTS_THROWS)
@@ -642,7 +660,7 @@ function CC.builtin_tfunction(interp::REPLInterpreter, @nospecialize(f),
                 a1val, a2val = a1.val, a2.val
                 if isa(a1val, Module) && isa(a2val, Symbol)
                     g = GlobalRef(a1val, a2val)
-                    if CC.isdefined_globalref(g)
+                    if isdefined_globalref(g)
                         return Const(ccall(:jl_get_globalref_value, Any, (Any,), g))
                     end
                     return Union{}
@@ -660,8 +678,8 @@ function CC.concrete_eval_eligible(interp::REPLInterpreter, @nospecialize(f),
                                    sv::CC.InferenceState)
     if (interp.limit_aggressive_inference ? is_repl_frame(sv) : is_call_graph_uncached(sv))
         neweffects = CC.Effects(result.effects; consistent=CC.ALWAYS_TRUE)
-        result = CC.MethodCallResult(result.rt, result.exct, result.edgecycle, result.edgelimited,
-                                     result.edge, neweffects)
+        result = CC.MethodCallResult(result.rt, result.exct, neweffects, result.edge,
+                                     result.edgecycle, result.edgelimited, result.volatile_inf_result)
     end
     ret = @invoke CC.concrete_eval_eligible(interp::CC.AbstractInterpreter, f::Any,
                                             result::CC.MethodCallResult, arginfo::CC.ArgInfo,
@@ -935,17 +953,11 @@ function get_import_mode(s::String)
     return nothing
 end
 
-function close_path_completion(dir, paths, str, pos)
-    length(paths) == 1 || return false  # Only close if there's a single choice...
-    path = (paths[1]::PathCompletion).path
+function close_path_completion(dir, path, str, pos)
     path = unescape_string(replace(path, "\\\$"=>"\$"))
     path = joinpath(dir, path)
     # ...except if it's a directory...
-    try
-        isdir(path)
-    catch e
-        e isa Base.IOError || rethrow() # `path` cannot be determined to be a file
-    end && return false
+    Base.isaccessibledir(path) && return false
     # ...and except if there's already a " at the cursor.
     return lastindex(str) <= pos || str[nextind(str, pos)] != '"'
 end
@@ -1225,33 +1237,35 @@ function completions(string::String, pos::Int, context_module::Module=Main, shif
     partial = string[1:pos]
     inc_tag = Base.incomplete_tag(Meta.parse(partial, raise=false, depwarn=false))
 
-    # ?(x, y)TAB lists methods you can call with these objects
-    # ?(x, y TAB lists methods that take these objects as the first two arguments
-    # MyModule.?(x, y)TAB restricts the search to names in MyModule
-    rexm = match(r"(\w+\.|)\?\((.*)$", partial)
-    if rexm !== nothing
-        # Get the module scope
-        if isempty(rexm.captures[1])
-            callee_module = context_module
-        else
-            modname = Symbol(rexm.captures[1][1:end-1])
-            if isdefined(context_module, modname)
-                callee_module = getfield(context_module, modname)
-                if !isa(callee_module, Module)
+    if !hint # require a tab press for completion of these
+        # ?(x, y)TAB lists methods you can call with these objects
+        # ?(x, y TAB lists methods that take these objects as the first two arguments
+        # MyModule.?(x, y)TAB restricts the search to names in MyModule
+        rexm = match(r"(\w+\.|)\?\((.*)$", partial)
+        if rexm !== nothing
+            # Get the module scope
+            if isempty(rexm.captures[1])
+                callee_module = context_module
+            else
+                modname = Symbol(rexm.captures[1][1:end-1])
+                if isdefined(context_module, modname)
+                    callee_module = getfield(context_module, modname)
+                    if !isa(callee_module, Module)
+                        callee_module = context_module
+                    end
+                else
                     callee_module = context_module
                 end
-            else
-                callee_module = context_module
             end
-        end
-        moreargs = !endswith(rexm.captures[2], ')')
-        callstr = "_(" * rexm.captures[2]
-        if moreargs
-            callstr *= ')'
-        end
-        ex_org = Meta.parse(callstr, raise=false, depwarn=false)
-        if isa(ex_org, Expr)
-            return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs, shift), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
+            moreargs = !endswith(rexm.captures[2], ')')
+            callstr = "_(" * rexm.captures[2]
+            if moreargs
+                callstr *= ')'
+            end
+            ex_org = Meta.parse(callstr, raise=false, depwarn=false)
+            if isa(ex_org, Expr)
+                return complete_any_methods(ex_org, callee_module::Module, context_module, moreargs, shift), (0:length(rexm.captures[1])+1) .+ rexm.offset, false
+            end
         end
     end
 
@@ -1356,10 +1370,12 @@ function completions(string::String, pos::Int, context_module::Module=Main, shif
             if !isnothing(path)
                 paths, dir, success = complete_path(path::String, string_escape=true)
 
-                if close_path_completion(dir, paths, path, pos)
-                    p = (paths[1]::PathCompletion).path * "\""
+                if length(paths) == 1
+                    p = (paths[1]::PathCompletion).path
                     hint && was_expanded && (p = contractuser(p))
-                    paths[1] = PathCompletion(p)
+                    if close_path_completion(dir, p, path, pos)
+                        paths[1] = PathCompletion(p * "\"")
+                    end
                 end
 
                 if success && !isempty(dir)

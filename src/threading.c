@@ -401,6 +401,26 @@ jl_ptls_t jl_init_threadtls(int16_t tid)
     return ptls;
 }
 
+static _Atomic(jl_function_t*) init_task_lock_func JL_GLOBALLY_ROOTED = NULL;
+
+static void jl_init_task_lock(jl_task_t *ct)
+{
+    jl_function_t *done = jl_atomic_load_relaxed(&init_task_lock_func);
+    if (done == NULL) {
+        done = (jl_function_t*)jl_get_global(jl_base_module, jl_symbol("init_task_lock"));
+        if (done != NULL)
+            jl_atomic_store_release(&init_task_lock_func, done);
+    }
+    if (done != NULL) {
+        jl_value_t *args[2] = {done, (jl_value_t*)ct};
+        JL_TRY {
+            jl_apply(args, 2);
+        }
+        JL_CATCH {
+            jl_no_exc_handler(jl_current_exception(ct), ct);
+        }
+    }
+}
 // Pass in the handle to the system image. This is used to initialize the runtime correctly in case we are a shared library
 JL_DLLEXPORT jl_gcframe_t **jl_adopt_thread(void* sysimg_handle)
 {
@@ -429,6 +449,8 @@ JL_DLLEXPORT jl_gcframe_t **jl_adopt_thread(void* sysimg_handle)
     JL_GC_PROMISE_ROOTED(ct);
     uv_random(NULL, NULL, &ct->rngState, sizeof(ct->rngState), 0, NULL);
     jl_atomic_fetch_add(&jl_gc_disable_counter, -1);
+    ct->world_age = jl_get_world_counter(); // root_task sets world_age to 1
+    jl_init_task_lock(ct);
     return &ct->gcstack;
 }
 
