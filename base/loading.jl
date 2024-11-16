@@ -1619,8 +1619,8 @@ function verify_method(codeinst::CodeInstance, stack::Vector{CodeInstance}, visi
             @atomic child.min_world = minworld
         end
         @atomic child.max_world = maxworld
-        @assert visiting[codeinst] == length(stack) + 1
-        delete!(visiting, codeinst)
+        @assert visiting[child] == length(stack) + 1
+        delete!(visiting, child)
         invalidations = _jl_debug_method_invalidation[]
         if invalidations !== nothing && maxworld < current_world
             push!(invalidations, child, "verify_methods", cause)
