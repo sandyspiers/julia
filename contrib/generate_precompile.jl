@@ -35,8 +35,8 @@ precompile(Base.unsafe_string, (Ptr{UInt8},))
 precompile(Base.unsafe_string, (Ptr{Int8},))
 
 # loading.jl
-precompile(Base.__require_prelocked, (Base.PkgId, Nothing))
-precompile(Base._require, (Base.PkgId, Nothing))
+precompile(Base.__require, (Module, Symbol))
+precompile(Base.__require, (Base.PkgId,))
 precompile(Base.indexed_iterate, (Pair{Symbol, Union{Nothing, String}}, Int))
 precompile(Base.indexed_iterate, (Pair{Symbol, Union{Nothing, String}}, Int, Int))
 precompile(Tuple{typeof(Base.Threads.atomic_add!), Base.Threads.Atomic{Int}, Int})
@@ -183,10 +183,10 @@ for match = Base._methods(+, (Int, Int), -1, Base.get_world_counter())
     # interactive startup uses this
     write(IOBuffer(), "")
 
-    # not critical, but helps hide unrelated compilation from @time when using --trace-compile
-    foo() = rand(2,2) * rand(2,2)
-    @time foo()
-    @time foo()
+    # Not critical, but helps hide unrelated compilation from @time when using --trace-compile.
+    f55729() = Base.Experimental.@force_compile
+    @time @eval f55729()
+    @time @eval f55729()
 
     break   # only actually need to do this once
 end
@@ -359,6 +359,7 @@ generate_precompile_statements() = try # Make sure `ansi_enablecursor` is printe
             eval(PrecompileStagingArea, :(const $(Symbol(_mod)) = $_mod))
         end
     end
+    eval(PrecompileStagingArea, :(const Compiler = Base.Compiler))
 
     n_succeeded = 0
     # Make statements unique
