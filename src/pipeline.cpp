@@ -38,6 +38,7 @@
 #include <llvm/Transforms/Scalar/ADCE.h>
 #include <llvm/Transforms/Scalar/AnnotationRemarks.h>
 #include <llvm/Transforms/Scalar/BDCE.h>
+#include "llvm/Transforms/Scalar/ConstraintElimination.h"
 #include <llvm/Transforms/Scalar/CorrelatedValuePropagation.h>
 #include <llvm/Transforms/Scalar/DCE.h>
 #include <llvm/Transforms/Scalar/DeadStoreElimination.h>
@@ -405,6 +406,7 @@ static void buildEarlyOptimizerPipeline(ModulePassManager &MPM, PassBuilder *PB,
             FPM.addPass(CorrelatedValuePropagationPass());
             FPM.addPass(LibCallsShrinkWrapPass());
             FPM.addPass(ReassociatePass());
+            FPM.addPass(ConstraintEliminationPass());
             JULIA_PASS(FPM.addPass(AllocOptPass()));
         } else { // if (O.getSpeedupLevel() >= 1) (exactly)
             FPM.addPass(EarlyCSEPass());
@@ -488,6 +490,7 @@ static void buildScalarOptimizerPipeline(FunctionPassManager &FPM, PassBuilder *
             FPM.addPass(DSEPass());
             FPM.addPass(IRCEPass());
             FPM.addPass(JumpThreadingPass());
+            FPM.addPass(ConstraintEliminationPass());
         }
         if (O.getSpeedupLevel() >= 3) {
             FPM.addPass(GVNPass());
