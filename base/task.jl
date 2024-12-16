@@ -983,7 +983,7 @@ function enq_work(t::Task)
     # n_spinning == 0 && ccall(:jl_add_spinner, Cvoid, ())
     return t
 end
-                            
+
 function schedule(t::Task)
     if ChildFirst
         ct = current_task()
@@ -996,6 +996,7 @@ function schedule(t::Task)
             yieldto(t)
         end
     else
+        maybe_record_enqueued!(t)
         enq_work(t)
     end
     return t
