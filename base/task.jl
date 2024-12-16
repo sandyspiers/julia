@@ -849,6 +849,11 @@ function task_done_hook(t::Task)
     end
 end
 
+function init_task_lock(t::Task) # Function only called from jl_adopt_thread so foreign tasks have a lock.
+    if t.donenotify === nothing
+        t.donenotify = ThreadSynchronizer()
+    end
+end
 
 ## scheduler and work queue
 
@@ -978,15 +983,15 @@ function enq_work(t::Task)
     # n_spinning == 0 && ccall(:jl_add_spinner, Cvoid, ())
     return t
 end
-
-const ChildFirst = false
-
+                            
 function schedule(t::Task)
     if ChildFirst
         ct = current_task()
         if ct.sticky || t.sticky
+            maybe_record_enqueued!(t)
             enq_work(t)
         else
+            maybe_record_enqueued!(t)
             enq_work(ct)
             yieldto(t)
         end
@@ -994,8 +999,6 @@ function schedule(t::Task)
         enq_work(t)
     end
     return t
-end
-
 """
     schedule(t::Task, [val]; error=false)
 
@@ -1048,6 +1051,8 @@ function schedule(t::Task, @nospecialize(arg); error=false)
         t.queue === nothing || Base.error("schedule: Task not runnable")
         setfield!(t, :result, arg)
     end
+    # [task] created -scheduled-> wait_time
+    maybe_record_enqueued!(t)
     enq_work(t)
     return t
 end
@@ -1081,11 +1086,15 @@ immediately yields to `t` before calling the scheduler.
 Throws a `ConcurrencyViolationError` if `t` is the currently running task.
 """
 function yield(t::Task, @nospecialize(x=nothing))
-    current = current_task()
-    t === current && throw(ConcurrencyViolationError("Cannot yield to currently running task!"))
+    ct = current_task()
+    t === ct && throw(ConcurrencyViolationError("Cannot yield to currently running task!"))
     (t._state === task_state_runnable && t.queue === nothing) || throw(ConcurrencyViolationError("yield: Task not runnable"))
+    # [task] user_time -yield-> wait_time
+    record_running_time!(ct)
+    # [task] created -scheduled-> wait_time
+    maybe_record_enqueued!(t)
     t.result = x
-    enq_work(current)
+    enq_work(ct)
     set_next_task(t)
     return try_yieldto(ensure_rescheduled)
 end
@@ -1099,6 +1108,7 @@ call to `yieldto`. This is a low-level call that only switches tasks, not consid
 or scheduling in any way. Its use is discouraged.
 """
 function yieldto(t::Task, @nospecialize(x=nothing))
+    ct = current_task()
     # TODO: these are legacy behaviors; these should perhaps be a scheduler
     # state error instead.
     if t._state === task_state_done
@@ -1106,6 +1116,10 @@ function yieldto(t::Task, @nospecialize(x=nothing))
     elseif t._state === task_state_failed
         throw(t.result)
     end
+    # [task] user_time -yield-> wait_time
+    record_running_time!(ct)
+    # [task] created -scheduled-unfairly-> wait_time
+    maybe_record_enqueued!(t)
     t.result = x
     set_next_task(t)
     return try_yieldto(identity)
@@ -1119,6 +1133,10 @@ function try_yieldto(undo)
         rethrow()
     end
     ct = current_task()
+    # [task] wait_time -(re)started-> user_time
+    if ct.metrics_enabled
+        @atomic :monotonic ct.last_started_running_at = time_ns()
+    end
     if ct._isexception
         exc = ct.result
         ct.result = nothing
@@ -1132,6 +1150,11 @@ end
 
 # yield to a task, throwing an exception in it
 function throwto(t::Task, @nospecialize exc)
+    ct = current_task()
+    # [task] user_time -yield-> wait_time
+    record_running_time!(ct)
+    # [task] created -scheduled-unfairly-> wait_time
+    maybe_record_enqueued!(t)
     t.result = exc
     t._isexception = true
     set_next_task(t)
@@ -1184,6 +1207,9 @@ checktaskempty = Scheduler.checktaskempty
 end
 
 function wait()
+    ct = current_task()
+    # [task] user_time -yield-or-done-> wait_time
+    record_running_time!(ct)
     GC.safepoint()
     W = workqueue_for(Threads.threadid())
     poptask(W)
@@ -1197,4 +1223,22 @@ if Sys.iswindows()
     pause() = ccall(:Sleep, stdcall, Cvoid, (UInt32,), 0xffffffff)
 else
     pause() = ccall(:pause, Cvoid, ())
+end
+
+# update the `running_time_ns` field of `t` to include the time since it last started running.
+function record_running_time!(t::Task)
+    if t.metrics_enabled && !istaskdone(t)
+        @atomic :monotonic t.running_time_ns += time_ns() - t.last_started_running_at
+    end
+    return t
+end
+
+# if this is the first time `t` has been added to the run queue
+# (or the first time it has been unfairly yielded to without being added to the run queue)
+# then set the `first_enqueued_at` field to the current time.
+function maybe_record_enqueued!(t::Task)
+    if t.metrics_enabled && t.first_enqueued_at == 0
+        @atomic :monotonic t.first_enqueued_at = time_ns()
+    end
+    return t
 end
