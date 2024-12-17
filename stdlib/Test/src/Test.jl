@@ -1194,7 +1194,7 @@ function print_test_results(ts::AbstractTestSet, depth_pad=0)
     duration_width = max(textwidth("Time"), textwidth(tc.duration))
     # Calculate the alignment of the test result counts by
     # recursively walking the tree of test sets
-    align = max(get_alignment(ts, 0), textwidth("Test Summary:"))
+    align = max(get_alignment(ts, depth_pad), textwidth("Test Summary:"))
     # Print the outer test set header once
     printstyled(rpad("Test Summary:", align, " "), " |", " "; bold=true)
     if pass_width > 0
@@ -1563,6 +1563,13 @@ parent test set (with the context object appended to any failing tests.)
 !!! compat "Julia 1.10"
     Multiple `let` assignments are supported since Julia 1.10.
 
+# Special implicit world age increment for `@testset begin`
+
+World age inside `@testset begin` increments implicitly after every statement.
+This matches the behavior of ordinary toplevel code, but not that of ordinary
+`begin/end` blocks, i.e. with respect to world age, `@testset begin` behaves
+as if the body of the `begin/end` block was written at toplevel.
+
 ## Examples
 ```jldoctest
 julia> @testset let logi = log(im)
@@ -1657,6 +1664,21 @@ function testset_context(args, ex, source)
     return esc(ex)
 end
 
+function insert_toplevel_latestworld(@nospecialize(tests))
+    isa(tests, Expr) || return tests
+    (tests.head !== :block) && return tests
+    ret = Expr(:block)
+    for arg in tests.args
+        push!(ret.args, arg)
+        if isa(arg, LineNumberNode) ||
+          (isa(arg, Expr) && arg.head in (:latestworld, :var"latestworld-if-toplevel"))
+            continue
+        end
+        push!(ret.args, Expr(:var"latestworld-if-toplevel"))
+    end
+    return ret
+end
+
 """
 Generate the code for a `@testset` with a function call or `begin`/`end` argument
 """
@@ -1674,6 +1696,8 @@ function testset_beginend_call(args, tests, source)
     if testsettype === nothing
         testsettype = :(get_testset_depth() == 0 ? DefaultTestSet : typeof(get_testset()))
     end
+
+    tests = insert_toplevel_latestworld(tests)
 
     # Generate a block of code that initializes a new testset, adds
     # it to the task local storage, evaluates the test(s), before
@@ -1941,8 +1965,9 @@ Arguments
   #self#::Core.Const(f)
   a::Int64
 Body::UNION{FLOAT64, INT64}
-1 ─ %1 = (a > 1)::Bool
-└──      goto #3 if not %1
+1 ─ %1 = :>::Core.Const(>)
+│   %2 = (%1)(a, 1)::Bool
+└──      goto #3 if not %2
 2 ─      return 1
 3 ─      return 1.0
 
