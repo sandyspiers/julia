@@ -8,7 +8,6 @@ outname = nothing
 file = nothing
 add_ccallables = false
 verbose = false
-output_llvm = nothing
 
 help = findfirst(x->x == "--help", ARGS)
 if help !== nothing
@@ -18,7 +17,6 @@ if help !== nothing
         --experimental --trim=<no,safe,unsafe,unsafe-warn>  Only output code statically determined to be reachable
         --compile-ccallable  Include all methods marked `@ccallable` in output
         --verbose            Request verbose output
-        --output-llvm=<opt,unopt>  Output LLVM bitcode
         """)
     exit(0)
 end
@@ -62,21 +60,7 @@ cflags = Base.shell_split(cflags)
 allflags = readchomp(`$(cmd) $(joinpath(Sys.BINDIR, Base.DATAROOTDIR,"julia", "julia-config.jl")) --allflags`)
 allflags = Base.shell_split(allflags)
 tmpdir = mktempdir(cleanup=false)
-initsrc_path = joinpath(tmpdir, "init.c")
-init_path = joinpath(tmpdir, "init.a")
 img_path = joinpath(tmpdir, "img.a")
-
-open(initsrc_path, "w") do io
-    print(io, """
-              #include <julia.h>
-              __attribute__((constructor)) void static_init(void) {
-                  if (jl_is_initialized())
-                      return;
-                  julia_init(JL_IMAGE_IN_MEMORY);
-                  jl_exception_clear();
-              }
-              """)
-end
 
 cmd = addenv(`$cmd --project=$(Base.active_project()) --output-o $img_path --output-incremental=no --strip-ir --strip-metadata $julia_args $(joinpath(@__DIR__,"juliac-buildscript.jl")) $absfile $output_type $add_ccallables`, "OPENBLAS_NUM_THREADS" => 1, "JULIA_NUM_THREADS" => 1)
 verbose && println("Running: $cmd")
@@ -84,8 +68,6 @@ if !success(pipeline(cmd; stdout, stderr))
     println(stderr, "\nFailed to compile $file")
     exit(1)
 end
-
-run(`cc $(cflags) -g -c -o $init_path $initsrc_path`)
 
 if output_type == "--output-lib" || output_type == "--output-sysimage"
     of, ext = splitext(outname)
