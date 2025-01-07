@@ -1442,7 +1442,7 @@ function _insert_backedges(edges::Vector{Any}, stack::Vector{CodeInstance}, visi
         if maxvalid ≥ minvalid
             if get_world_counter() == maxvalid
                 # if this callee is still valid, add all the backedges
-                Core.Compiler.store_backedges(codeinst, codeinst.edges)
+                Base.Compiler.store_backedges(codeinst, codeinst.edges)
             end
             if get_world_counter() == maxvalid
                 maxvalid = typemax(UInt)
@@ -1699,18 +1699,12 @@ function verify_invokesig(@nospecialize(invokesig), expected::Method, world::UIn
         if mt === nothing
             maxworld = 0
         else
-            min_valid = RefValue{UInt}(minworld)
-            max_valid = RefValue{UInt}(maxworld)
-            matches = @ccall jl_gf_invoke_lookup_worlds(
-                invokesig::Any, mt::Any, world::UInt, min_valid::Ptr{Csize_t}, max_valid::Ptr{Csize_t})::Any
-            minworld, maxworld = min_valid[], max_valid[]
-            if matches === nothing
+            matched, valid_worlds = Base.Compiler._findsup(invokesig, mt, world)
+            minworld, maxworld = valid_worlds.min_world, valid_worlds.max_world
+            if matched === nothing
                 maxworld = 0
-            else
-                matches = matches::Core.MethodMatch
-                if matches.method != expected
-                    maxworld = 0
-                end
+            elseif matched.method != expected
+                maxworld = 0
             end
         end
     end
@@ -4518,7 +4512,7 @@ end
 
 function precompile(@nospecialize(argt::Type), m::Method)
     atype, sparams = ccall(:jl_type_intersection_with_env, Any, (Any, Any), argt, m.sig)::SimpleVector
-    mi = Core.Compiler.specialize_method(m, atype, sparams)
+    mi = Base.Compiler.specialize_method(m, atype, sparams)
     return precompile(mi)
 end
 
