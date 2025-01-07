@@ -1004,9 +1004,9 @@ precompile_test_harness("code caching") do dir
     MA = getfield(@__MODULE__, StaleA)
     Base.eval(MA, :(nbits(::UInt8) = 8))
     @eval using $StaleC
-    invalidations = Base.debug_method_invalidation(true)
+    invalidations = Base.StaticData.debug_method_invalidation(true)
     @eval using $StaleB
-    Base.debug_method_invalidation(false)
+    Base.StaticData.debug_method_invalidation(false)
     MB = getfield(@__MODULE__, StaleB)
     MC = getfield(@__MODULE__, StaleC)
     world = Base.get_world_counter()
